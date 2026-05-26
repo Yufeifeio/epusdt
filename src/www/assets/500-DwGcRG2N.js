@@ -1,0 +1,1 @@
+import{t as e}from"./general-error-D1_cvFwU.js";var t=e;export{t as component};

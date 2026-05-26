@@ -1,1 +1,0 @@
-import{t as e}from"./forbidden-Difv5S06.js";var t=e;export{t as component};

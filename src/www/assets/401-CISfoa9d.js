@@ -1,0 +1,1 @@
+import{t as e}from"./unauthorized-error-D6E2I2cs.js";var t=e;export{t as component};
