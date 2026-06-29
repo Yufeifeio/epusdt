@@ -290,10 +290,9 @@ func TestAdminChangePassword(t *testing.T) {
 	}
 }
 
-// TestAdminInitPasswordFlow verifies that the initial password stays readable
-// until the admin password is changed, along with the hash-based
-// "password changed" detection flow.
-func TestAdminInitPasswordFlow(t *testing.T) {
+// TestAdminInitialPasswordMetadataFlow verifies that the public plaintext route
+// is gone while the hash-based default-password detection flow still works.
+func TestAdminInitialPasswordMetadataFlow(t *testing.T) {
 	e := setupTestEnv(t)
 	const initPassword = "init-pass-123456"
 
@@ -321,14 +320,11 @@ func TestAdminInitPasswordFlow(t *testing.T) {
 		t.Fatalf("expected password_changed=false before change, got true")
 	}
 
-	recFetch := doGet(e, "/admin/api/v1/auth/init-password")
-	respFetch := assertOK(t, recFetch)
-	fetchData, _ := respFetch["data"].(map[string]interface{})
-	if fetchData["username"] != testAdminUsername {
-		t.Fatalf("expected username=%s, got %v", testAdminUsername, fetchData["username"])
-	}
-	if fetchData["password"] != initPassword {
-		t.Fatalf("expected initial password %s, got %v", initPassword, fetchData["password"])
+	token := adminLogin(t, e, testAdminUsername, initPassword)
+
+	recFetch := doGetAdmin(e, "/admin/api/v1/auth/init-password", token)
+	if recFetch.Code != http.StatusNotFound {
+		t.Fatalf("expected removed init-password route to return 404, got %d body=%s", recFetch.Code, recFetch.Body.String())
 	}
 	var plaintextRows int64
 	if err := dao.Mdb.Unscoped().
@@ -340,18 +336,6 @@ func TestAdminInitPasswordFlow(t *testing.T) {
 	if plaintextRows != 1 {
 		t.Fatalf("expected init password plaintext to remain available, got %d rows", plaintextRows)
 	}
-
-	recFetch2 := doGet(e, "/admin/api/v1/auth/init-password")
-	respFetch2 := assertOK(t, recFetch2)
-	fetchData2, _ := respFetch2["data"].(map[string]interface{})
-	if fetchData2["username"] != testAdminUsername {
-		t.Fatalf("expected second fetch username=%s, got %v", testAdminUsername, fetchData2["username"])
-	}
-	if fetchData2["password"] != initPassword {
-		t.Fatalf("expected second fetch password %s, got %v", initPassword, fetchData2["password"])
-	}
-
-	token := adminLogin(t, e, testAdminUsername, initPassword)
 
 	recMe1 := doGetAdmin(e, "/admin/api/v1/auth/me", token)
 	respMe1 := assertOK(t, recMe1)
@@ -371,21 +355,6 @@ func TestAdminInitPasswordFlow(t *testing.T) {
 	hashData2, _ := respHash2["data"].(map[string]interface{})
 	if got, _ := hashData2["password_changed"].(bool); !got {
 		t.Fatalf("expected password_changed=true after change, got %v", got)
-	}
-
-	recFetch3 := doGet(e, "/admin/api/v1/auth/init-password")
-	if recFetch3.Code != http.StatusBadRequest {
-		t.Fatalf("fetch after password change should fail with 400, got %d body=%s", recFetch3.Code, recFetch3.Body.String())
-	}
-	var respFetch3 map[string]interface{}
-	if err := json.Unmarshal(recFetch3.Body.Bytes(), &respFetch3); err != nil {
-		t.Fatalf("unmarshal fetch-after-change response: %v", err)
-	}
-	if got := int(respFetch3["status_code"].(float64)); got != 10040 {
-		t.Fatalf("fetch after password change status_code = %d, want 10040; response=%v", got, respFetch3)
-	}
-	if got, _ := respFetch3["message"].(string); got != constant.Errno[10040] {
-		t.Fatalf("fetch after password change message = %q, want %q; response=%v", got, constant.Errno[10040], respFetch3)
 	}
 	if err := dao.Mdb.Unscoped().
 		Model(&mdb.Setting{}).
