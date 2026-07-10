@@ -64,7 +64,8 @@ const (
 )
 
 const (
-	SettingDefaultSystemLogLevel = "error"
+	SettingDefaultSystemLogLevel     = "error"
+	SettingDefaultRateForcedRateList = `{"cny":{"usdt":0.14705882352941177,"usdc":0.14705882352941177}}`
 )
 
 type Setting struct {

@@ -44,6 +44,9 @@ func InitApp() {
 				}
 			}
 		}
+		if err := data.EnsureDefaultForcedRateList(); err != nil {
+			color.Red.Printf("[bootstrap] seed rate.forced_rate_list err=%s\n", err)
+		}
 		// Seed admin account and JWT secret so the management console is
 		// immediately usable on a fresh install. Both are idempotent.
 		initialPassword, isNew, err := data.EnsureDefaultAdmin()

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1762,6 +1763,79 @@ func TestAdminSettings_AllowsPublicRateAPIURL(t *testing.T) {
 	}
 }
 
+func TestAdminSettings_AllowsEmptyRateAPIURLAndRestoresDefaultForcedRateList(t *testing.T) {
+	e, token := setupAdminTestEnv(t)
+
+	rec := doPutAdmin(e, "/admin/api/v1/settings", map[string]interface{}{
+		"items": []map[string]interface{}{
+			{"group": "rate", "key": mdb.SettingKeyRateApiUrl, "value": "", "type": "string"},
+			{"group": "rate", "key": mdb.SettingKeyRateForcedRateList, "value": "", "type": "json"},
+		},
+	}, token)
+	resp := assertOK(t, rec)
+	results, ok := resp["data"].([]interface{})
+	if !ok || len(results) != 2 {
+		t.Fatalf("expected two results, got %T %v", resp["data"], resp["data"])
+	}
+	for _, item := range results {
+		result, _ := item.(map[string]interface{})
+		if result["ok"] != true {
+			t.Fatalf("empty rate settings result = %v, want ok=true", result)
+		}
+	}
+
+	var apiRow mdb.Setting
+	if err := dao.Mdb.Where("`key` = ?", mdb.SettingKeyRateApiUrl).Take(&apiRow).Error; err != nil {
+		t.Fatalf("load rate.api_url: %v", err)
+	}
+	if apiRow.Value != "" {
+		t.Fatalf("rate.api_url value = %q, want empty", apiRow.Value)
+	}
+
+	if got := data.GetSettingString(mdb.SettingKeyRateForcedRateList, ""); got != mdb.SettingDefaultRateForcedRateList {
+		t.Fatalf("rate.forced_rate_list = %q, want default %q", got, mdb.SettingDefaultRateForcedRateList)
+	}
+	wantRate := 1.0 / 6.8
+	if got := config.GetRateForCoin("USDT", "CNY"); math.Abs(got-wantRate) > 1e-12 {
+		t.Fatalf("GetRateForCoin(USDT, CNY) = %v, want %v", got, wantRate)
+	}
+	if got := config.GetRateForCoin("USDC", "CNY"); math.Abs(got-wantRate) > 1e-12 {
+		t.Fatalf("GetRateForCoin(USDC, CNY) = %v, want %v", got, wantRate)
+	}
+}
+
+func TestAdminSettings_DoesNotOverrideNonEmptyForcedRateListWithZeroRate(t *testing.T) {
+	e, token := setupAdminTestEnv(t)
+	t.Setenv("API_RATE_URL", "")
+
+	rec := doPutAdmin(e, "/admin/api/v1/settings", map[string]interface{}{
+		"items": []map[string]interface{}{
+			{"group": "rate", "key": mdb.SettingKeyRateApiUrl, "value": "", "type": "string"},
+			{"group": "rate", "key": mdb.SettingKeyRateForcedRateList, "value": map[string]interface{}{
+				"CNY": map[string]interface{}{"USDT": 0},
+			}, "type": "json"},
+		},
+	}, token)
+	resp := assertOK(t, rec)
+	results, ok := resp["data"].([]interface{})
+	if !ok || len(results) != 2 {
+		t.Fatalf("expected two results, got %T %v", resp["data"], resp["data"])
+	}
+	for _, item := range results {
+		result, _ := item.(map[string]interface{})
+		if result["ok"] != true {
+			t.Fatalf("zero forced rate list result = %v, want ok=true", result)
+		}
+	}
+
+	if got := data.GetSettingString(mdb.SettingKeyRateForcedRateList, ""); got != `{"cny":{"usdt":0}}` {
+		t.Fatalf("rate.forced_rate_list = %q, want user JSON preserved", got)
+	}
+	if got := config.GetRateForCoin("USDT", "CNY"); got != 0 {
+		t.Fatalf("zero forced rate lookup = %v, want 0", got)
+	}
+}
+
 func TestAdminSettings_DeleteThenReupsertRestoresSetting(t *testing.T) {
 	e, token := setupAdminTestEnv(t)
 
@@ -1828,11 +1902,12 @@ func TestAdminSettings_DeleteThenReupsertRestoresForcedRateList(t *testing.T) {
 
 	rec = doDeleteAdmin(e, "/admin/api/v1/settings/"+mdb.SettingKeyRateForcedRateList, token)
 	assertOK(t, rec)
-	if got := data.GetSettingString(mdb.SettingKeyRateForcedRateList, "fallback"); got != "fallback" {
-		t.Fatalf("deleted forced rate list still in cache/read path: got %q", got)
+	if got := data.GetSettingString(mdb.SettingKeyRateForcedRateList, ""); got != mdb.SettingDefaultRateForcedRateList {
+		t.Fatalf("deleted forced rate list restored = %q, want default %q", got, mdb.SettingDefaultRateForcedRateList)
 	}
-	if got := config.GetRateForCoin("USDT", "CNY"); got != 0 {
-		t.Fatalf("deleted forced rate list still used by rate lookup: got %v", got)
+	wantDefaultRate := 1.0 / 6.8
+	if got := config.GetRateForCoin("USDT", "CNY"); math.Abs(got-wantDefaultRate) > 1e-12 {
+		t.Fatalf("deleted forced rate list lookup = %v, want default %v", got, wantDefaultRate)
 	}
 
 	rec = doPutAdmin(e, "/admin/api/v1/settings", map[string]interface{}{

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GMWalletApp/epusdt/model/mdb"
 	"github.com/GMWalletApp/epusdt/util/http_client"
 	"github.com/go-resty/resty/v2"
 	"github.com/spf13/viper"
@@ -262,6 +263,29 @@ func TestGetUsdtRatePrefersForcedRateList(t *testing.T) {
 	}
 	if apiCalled {
 		t.Fatalf("rate API should not be called when rate.forced_rate_list has positive rate")
+	}
+}
+
+func TestGetRateForCoinUsesDefaultForcedRateList(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	t.Setenv("API_RATE_URL", "")
+
+	installMockHTTPClient(t, func(r *http.Request) (*http.Response, error) {
+		t.Fatalf("rate API should not be called when default rate.forced_rate_list has positive rate")
+		return nil, nil
+	})
+
+	installSettingsGetter(t, map[string]string{
+		"rate.forced_rate_list": mdb.SettingDefaultRateForcedRateList,
+		"rate.api_url":          "",
+	})
+
+	want := 1.0 / 6.8
+	for _, coin := range []string{"usdt", "usdc"} {
+		if got := GetRateForCoin(coin, "cny"); math.Abs(got-want) > 1e-12 {
+			t.Fatalf("GetRateForCoin(%s, cny) = %v, want %v", coin, got, want)
+		}
 	}
 }
 
