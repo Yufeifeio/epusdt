@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -851,6 +852,170 @@ func TestAdminOrders_MarkPaidSuccessAfterVerification(t *testing.T) {
 	}
 }
 
+func TestAdminOrders_MarkPaidExpiredOrderAfterVerification(t *testing.T) {
+	e, token := setupAdminTestEnv(t)
+	order := &mdb.Orders{
+		TradeId:        "trade-admin-mark-paid-expired",
+		OrderId:        "order-admin-mark-paid-expired",
+		Amount:         10,
+		Currency:       "CNY",
+		ActualAmount:   1.23,
+		ReceiveAddress: "TTestTronAddressExpired",
+		Token:          "USDT",
+		Network:        mdb.NetworkTron,
+		Status:         mdb.StatusExpired,
+		NotifyUrl:      "https://merchant.example/notify",
+		PayProvider:    mdb.PaymentProviderOnChain,
+	}
+	if err := dao.Mdb.Create(order).Error; err != nil {
+		t.Fatalf("create order: %v", err)
+	}
+
+	verified := false
+	restore := service.SetManualOrderPaymentValidatorForTest(func(got *mdb.Orders, blockID string) (string, error) {
+		verified = true
+		if got.TradeId != order.TradeId {
+			t.Fatalf("validator trade_id = %s, want %s", got.TradeId, order.TradeId)
+		}
+		if got.Status != mdb.StatusExpired {
+			t.Fatalf("validator status = %d, want %d", got.Status, mdb.StatusExpired)
+		}
+		if blockID != "block-admin-expired" {
+			t.Fatalf("validator block id = %s, want block-admin-expired", blockID)
+		}
+		return "canonical-block-admin-expired", nil
+	})
+	defer restore()
+
+	rec := doPostAdmin(e, "/admin/api/v1/orders/"+order.TradeId+"/mark-paid", map[string]interface{}{
+		"block_transaction_id": "block-admin-expired",
+	}, token)
+	t.Logf("MarkOrderPaid expired success: status=%d body=%s", rec.Code, rec.Body.String())
+	assertOK(t, rec)
+	if !verified {
+		t.Fatal("expected chain verifier to be called")
+	}
+
+	paid, err := data.GetOrderInfoByTradeId(order.TradeId)
+	if err != nil {
+		t.Fatalf("reload order: %v", err)
+	}
+	if paid.Status != mdb.StatusPaySuccess {
+		t.Fatalf("status = %d, want %d", paid.Status, mdb.StatusPaySuccess)
+	}
+	if paid.BlockTransactionId != "canonical-block-admin-expired" {
+		t.Fatalf("block_transaction_id = %q", paid.BlockTransactionId)
+	}
+	if paid.CallBackConfirm != mdb.CallBackConfirmNo {
+		t.Fatalf("callback_confirm = %d, want %d", paid.CallBackConfirm, mdb.CallBackConfirmNo)
+	}
+}
+
+func TestAdminOrders_MarkPaidExpiredSubOrderAfterVerification(t *testing.T) {
+	e, token := setupAdminTestEnv(t)
+	parent := &mdb.Orders{
+		TradeId:        "trade-admin-mark-paid-expired-parent",
+		OrderId:        "order-admin-mark-paid-expired-parent",
+		Amount:         10,
+		Currency:       "CNY",
+		ActualAmount:   1.23,
+		ReceiveAddress: "TParentExpiredAddress",
+		Token:          "USDT",
+		Network:        mdb.NetworkTron,
+		Status:         mdb.StatusExpired,
+		NotifyUrl:      "https://merchant.example/notify",
+		PayProvider:    mdb.PaymentProviderOnChain,
+	}
+	if err := dao.Mdb.Create(parent).Error; err != nil {
+		t.Fatalf("create parent order: %v", err)
+	}
+	sub := &mdb.Orders{
+		TradeId:        "trade-admin-mark-paid-expired-sub",
+		OrderId:        "order-admin-mark-paid-expired-sub",
+		ParentTradeId:  parent.TradeId,
+		Amount:         10,
+		Currency:       "CNY",
+		ActualAmount:   1.23,
+		ReceiveAddress: "TSubExpiredAddress",
+		Token:          "USDT",
+		Network:        mdb.NetworkTron,
+		Status:         mdb.StatusExpired,
+		PayProvider:    mdb.PaymentProviderOnChain,
+	}
+	if err := dao.Mdb.Create(sub).Error; err != nil {
+		t.Fatalf("create sub order: %v", err)
+	}
+	sibling := &mdb.Orders{
+		TradeId:        "trade-admin-mark-paid-expired-sibling",
+		OrderId:        "order-admin-mark-paid-expired-sibling",
+		ParentTradeId:  parent.TradeId,
+		Amount:         10,
+		Currency:       "CNY",
+		ActualAmount:   1.24,
+		ReceiveAddress: "TSiblingExpiredAddress",
+		Token:          "USDT",
+		Network:        mdb.NetworkBsc,
+		Status:         mdb.StatusWaitPay,
+		PayProvider:    mdb.PaymentProviderOnChain,
+	}
+	if err := dao.Mdb.Create(sibling).Error; err != nil {
+		t.Fatalf("create sibling order: %v", err)
+	}
+
+	restore := service.SetManualOrderPaymentValidatorForTest(func(got *mdb.Orders, blockID string) (string, error) {
+		if got.TradeId != sub.TradeId {
+			t.Fatalf("validator trade_id = %s, want %s", got.TradeId, sub.TradeId)
+		}
+		if got.Status != mdb.StatusExpired {
+			t.Fatalf("validator status = %d, want %d", got.Status, mdb.StatusExpired)
+		}
+		if blockID != "block-admin-expired-sub" {
+			t.Fatalf("validator block id = %s, want block-admin-expired-sub", blockID)
+		}
+		return "canonical-block-admin-expired-sub", nil
+	})
+	defer restore()
+
+	rec := doPostAdmin(e, "/admin/api/v1/orders/"+sub.TradeId+"/mark-paid", map[string]interface{}{
+		"block_transaction_id": "block-admin-expired-sub",
+	}, token)
+	t.Logf("MarkOrderPaid expired sub success: status=%d body=%s", rec.Code, rec.Body.String())
+	assertOK(t, rec)
+
+	paidSub, err := data.GetOrderInfoByTradeId(sub.TradeId)
+	if err != nil {
+		t.Fatalf("reload sub order: %v", err)
+	}
+	if paidSub.Status != mdb.StatusPaySuccess || paidSub.BlockTransactionId != "canonical-block-admin-expired-sub" {
+		t.Fatalf("sub after mark-paid: status=%d block=%q", paidSub.Status, paidSub.BlockTransactionId)
+	}
+	if paidSub.CallBackConfirm != mdb.CallBackConfirmOk {
+		t.Fatalf("sub callback_confirm = %d, want %d", paidSub.CallBackConfirm, mdb.CallBackConfirmOk)
+	}
+
+	paidParent, err := data.GetOrderInfoByTradeId(parent.TradeId)
+	if err != nil {
+		t.Fatalf("reload parent order: %v", err)
+	}
+	if paidParent.Status != mdb.StatusPaySuccess {
+		t.Fatalf("parent status = %d, want %d", paidParent.Status, mdb.StatusPaySuccess)
+	}
+	if paidParent.PayBySubId != paidSub.ID {
+		t.Fatalf("parent pay_by_sub_id = %d, want %d", paidParent.PayBySubId, paidSub.ID)
+	}
+	if paidParent.CallBackConfirm != mdb.CallBackConfirmNo {
+		t.Fatalf("parent callback_confirm = %d, want %d", paidParent.CallBackConfirm, mdb.CallBackConfirmNo)
+	}
+
+	expiredSibling, err := data.GetOrderInfoByTradeId(sibling.TradeId)
+	if err != nil {
+		t.Fatalf("reload sibling order: %v", err)
+	}
+	if expiredSibling.Status != mdb.StatusExpired {
+		t.Fatalf("sibling status = %d, want %d", expiredSibling.Status, mdb.StatusExpired)
+	}
+}
+
 func TestAdminOrders_MarkPaidRejectsVerificationFailure(t *testing.T) {
 	e, token := setupAdminTestEnv(t)
 	order := &mdb.Orders{
@@ -901,7 +1066,7 @@ func TestAdminOrders_MarkPaidRejectsNonOnChainOrder(t *testing.T) {
 		ReceiveAddress: "TTestTronAddress001",
 		Token:          "USDT",
 		Network:        mdb.NetworkTron,
-		Status:         mdb.StatusWaitPay,
+		Status:         mdb.StatusExpired,
 		NotifyUrl:      "https://merchant.example/notify",
 		PayProvider:    mdb.PaymentProviderOkPay,
 	}
@@ -1598,6 +1763,79 @@ func TestAdminSettings_AllowsPublicRateAPIURL(t *testing.T) {
 	}
 }
 
+func TestAdminSettings_AllowsEmptyRateAPIURLAndRestoresDefaultForcedRateList(t *testing.T) {
+	e, token := setupAdminTestEnv(t)
+
+	rec := doPutAdmin(e, "/admin/api/v1/settings", map[string]interface{}{
+		"items": []map[string]interface{}{
+			{"group": "rate", "key": mdb.SettingKeyRateApiUrl, "value": "", "type": "string"},
+			{"group": "rate", "key": mdb.SettingKeyRateForcedRateList, "value": "", "type": "json"},
+		},
+	}, token)
+	resp := assertOK(t, rec)
+	results, ok := resp["data"].([]interface{})
+	if !ok || len(results) != 2 {
+		t.Fatalf("expected two results, got %T %v", resp["data"], resp["data"])
+	}
+	for _, item := range results {
+		result, _ := item.(map[string]interface{})
+		if result["ok"] != true {
+			t.Fatalf("empty rate settings result = %v, want ok=true", result)
+		}
+	}
+
+	var apiRow mdb.Setting
+	if err := dao.Mdb.Where("`key` = ?", mdb.SettingKeyRateApiUrl).Take(&apiRow).Error; err != nil {
+		t.Fatalf("load rate.api_url: %v", err)
+	}
+	if apiRow.Value != "" {
+		t.Fatalf("rate.api_url value = %q, want empty", apiRow.Value)
+	}
+
+	if got := data.GetSettingString(mdb.SettingKeyRateForcedRateList, ""); got != mdb.SettingDefaultRateForcedRateList {
+		t.Fatalf("rate.forced_rate_list = %q, want default %q", got, mdb.SettingDefaultRateForcedRateList)
+	}
+	wantRate := 1.0 / 6.8
+	if got := config.GetRateForCoin("USDT", "CNY"); math.Abs(got-wantRate) > 1e-12 {
+		t.Fatalf("GetRateForCoin(USDT, CNY) = %v, want %v", got, wantRate)
+	}
+	if got := config.GetRateForCoin("USDC", "CNY"); math.Abs(got-wantRate) > 1e-12 {
+		t.Fatalf("GetRateForCoin(USDC, CNY) = %v, want %v", got, wantRate)
+	}
+}
+
+func TestAdminSettings_DoesNotOverrideNonEmptyForcedRateListWithZeroRate(t *testing.T) {
+	e, token := setupAdminTestEnv(t)
+	t.Setenv("API_RATE_URL", "")
+
+	rec := doPutAdmin(e, "/admin/api/v1/settings", map[string]interface{}{
+		"items": []map[string]interface{}{
+			{"group": "rate", "key": mdb.SettingKeyRateApiUrl, "value": "", "type": "string"},
+			{"group": "rate", "key": mdb.SettingKeyRateForcedRateList, "value": map[string]interface{}{
+				"CNY": map[string]interface{}{"USDT": 0},
+			}, "type": "json"},
+		},
+	}, token)
+	resp := assertOK(t, rec)
+	results, ok := resp["data"].([]interface{})
+	if !ok || len(results) != 2 {
+		t.Fatalf("expected two results, got %T %v", resp["data"], resp["data"])
+	}
+	for _, item := range results {
+		result, _ := item.(map[string]interface{})
+		if result["ok"] != true {
+			t.Fatalf("zero forced rate list result = %v, want ok=true", result)
+		}
+	}
+
+	if got := data.GetSettingString(mdb.SettingKeyRateForcedRateList, ""); got != `{"cny":{"usdt":0}}` {
+		t.Fatalf("rate.forced_rate_list = %q, want user JSON preserved", got)
+	}
+	if got := config.GetRateForCoin("USDT", "CNY"); got != 0 {
+		t.Fatalf("zero forced rate lookup = %v, want 0", got)
+	}
+}
+
 func TestAdminSettings_DeleteThenReupsertRestoresSetting(t *testing.T) {
 	e, token := setupAdminTestEnv(t)
 
@@ -1664,11 +1902,12 @@ func TestAdminSettings_DeleteThenReupsertRestoresForcedRateList(t *testing.T) {
 
 	rec = doDeleteAdmin(e, "/admin/api/v1/settings/"+mdb.SettingKeyRateForcedRateList, token)
 	assertOK(t, rec)
-	if got := data.GetSettingString(mdb.SettingKeyRateForcedRateList, "fallback"); got != "fallback" {
-		t.Fatalf("deleted forced rate list still in cache/read path: got %q", got)
+	if got := data.GetSettingString(mdb.SettingKeyRateForcedRateList, ""); got != mdb.SettingDefaultRateForcedRateList {
+		t.Fatalf("deleted forced rate list restored = %q, want default %q", got, mdb.SettingDefaultRateForcedRateList)
 	}
-	if got := config.GetRateForCoin("USDT", "CNY"); got != 0 {
-		t.Fatalf("deleted forced rate list still used by rate lookup: got %v", got)
+	wantDefaultRate := 1.0 / 6.8
+	if got := config.GetRateForCoin("USDT", "CNY"); math.Abs(got-wantDefaultRate) > 1e-12 {
+		t.Fatalf("deleted forced rate list lookup = %v, want default %v", got, wantDefaultRate)
 	}
 
 	rec = doPutAdmin(e, "/admin/api/v1/settings", map[string]interface{}{

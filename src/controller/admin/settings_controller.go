@@ -21,7 +21,7 @@ import (
 //
 //   - group=rate:
 //     rate.forced_rate_list  (json)   — override rate map, e.g. {"cny":{"usdt":0.14635,"ton":0.5}}; base/coin keys are normalized to lowercase
-//     rate.api_url           (string) — external rate API URL used when no positive forced rate exists
+//     rate.api_url           (string) — optional external rate API URL used when no positive forced rate exists
 //     rate.adjust_percent    (float)  — rate adjustment percentage
 //     rate.okx_c2c_enabled   (bool)   — use OKX C2C rate feed
 //
@@ -97,7 +97,7 @@ func (c *BaseAdminController) ListSettings(ctx echo.Context) error {
 // @Description  Supported groups: brand, rate, system, epay, okpay.
 // @Description  epay group keys: epay.default_token (e.g. "usdt" or "ton", ignored when a supported type=token.network selector is supplied, empty allows status=4 placeholders), epay.default_currency (e.g. "cny", still applies when a supported type selector is supplied, empty falls back to cny), epay.default_network (e.g. "tron" or "ton", ignored when a supported type=token.network selector is supplied, empty allows status=4 placeholders).
 // @Description  okpay group keys: okpay.enabled, okpay.shop_id, okpay.shop_token, okpay.api_url, okpay.callback_url, okpay.return_url, okpay.timeout_seconds, okpay.allow_tokens.
-// @Description  rate group keys: rate.forced_rate_list (JSON map, e.g. {"cny":{"usdt":0.14635,"ton":0.5}}; base/coin keys are normalized to lowercase), rate.api_url, rate.adjust_percent, rate.okx_c2c_enabled.
+// @Description  rate group keys: rate.forced_rate_list (JSON map, e.g. {"cny":{"usdt":0.14635,"ton":0.5}}; base/coin keys are normalized to lowercase; empty is restored to the built-in CNY USDT/USDC default), rate.api_url (optional; non-empty value must be a public http/https URL), rate.adjust_percent, rate.okx_c2c_enabled.
 // @Description  brand group keys: brand.checkout_name, brand.logo_url, brand.site_title, brand.success_copy, brand.support_url, brand.background_color, brand.background_image_url. Legacy aliases brand.site_name, brand.page_title and brand.pay_success_text are also supported.
 // @Description  system group keys: system.order_expiration_time, system.amount_precision (int, 2-6, default 2), system.log_level (debug|info|warn|error, default error).
 // @Tags         Admin Settings
@@ -167,6 +167,9 @@ func (c *BaseAdminController) UpsertSettings(ctx echo.Context) error {
 		}
 		out = append(out, result{Key: key, OK: true})
 	}
+	if err := data.EnsureDefaultForcedRateList(); err != nil {
+		out = append(out, errorResult(mdb.SettingKeyRateForcedRateList, err))
+	}
 
 	// When telegram credentials are updated via settings, reload the
 	// command bot so operators don't need to restart the process, and
@@ -226,6 +229,9 @@ func normalizeAndValidateSettingItem(group, key, value string) (string, error) {
 	case mdb.SettingKeyRateApiUrl:
 		if strings.ToLower(strings.TrimSpace(group)) != mdb.SettingGroupRate {
 			return value, fmt.Errorf("%s must use group %s", key, mdb.SettingGroupRate)
+		}
+		if strings.TrimSpace(value) == "" {
+			return "", nil
 		}
 		if err := security.ValidatePublicHTTPURL(value); err != nil {
 			return value, fmt.Errorf("%s invalid: %w", key, err)
@@ -310,6 +316,11 @@ func (c *BaseAdminController) DeleteSetting(ctx echo.Context) error {
 	}
 	if err := data.DeleteSetting(key); err != nil {
 		return c.FailJson(ctx, err)
+	}
+	if key == mdb.SettingKeyRateForcedRateList {
+		if err := data.EnsureDefaultForcedRateList(); err != nil {
+			return c.FailJson(ctx, err)
+		}
 	}
 	if key == mdb.SettingKeySystemLogLevel {
 		if err := appLog.SetLevel(mdb.SettingDefaultSystemLogLevel); err != nil {

@@ -170,6 +170,27 @@ func TestSeedDefaultSettingsIncludesSystemLogLevel(t *testing.T) {
 	}
 }
 
+func TestSeedDefaultSettingsIncludesDefaultForcedRateList(t *testing.T) {
+	db := setupSeedSettingsTestDB(t)
+	Mdb = db
+
+	seedDefaultSettings()
+
+	var row mdb.Setting
+	if err := Mdb.Where("`key` = ?", mdb.SettingKeyRateForcedRateList).Take(&row).Error; err != nil {
+		t.Fatalf("load rate.forced_rate_list seed: %v", err)
+	}
+	if row.Group != mdb.SettingGroupRate {
+		t.Fatalf("rate.forced_rate_list group = %q, want %q", row.Group, mdb.SettingGroupRate)
+	}
+	if row.Value != mdb.SettingDefaultRateForcedRateList {
+		t.Fatalf("rate.forced_rate_list value = %q, want %q", row.Value, mdb.SettingDefaultRateForcedRateList)
+	}
+	if row.Type != mdb.SettingTypeJSON {
+		t.Fatalf("rate.forced_rate_list type = %q, want %q", row.Type, mdb.SettingTypeJSON)
+	}
+}
+
 func TestSeedDefaultSettingsUsesEmptyEpayTokenAndNetwork(t *testing.T) {
 	db := setupSeedSettingsTestDB(t)
 	Mdb = db
