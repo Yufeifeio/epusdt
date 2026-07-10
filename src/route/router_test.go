@@ -2137,6 +2137,48 @@ func TestSubmitTxHash_VerificationFailureAllowsRetrySameHash(t *testing.T) {
 	}
 }
 
+func TestSubmitTxHash_RejectsExpiredOrderBeforeVerification(t *testing.T) {
+	e := setupTestEnv(t)
+	tradeID := createCheckoutCounterRespTestOrder(t, e, "submit-tx-hash-expired-001")
+	if err := dao.Mdb.Model(&mdb.Orders{}).
+		Where("trade_id = ?", tradeID).
+		Update("status", mdb.StatusExpired).Error; err != nil {
+		t.Fatalf("expire order: %v", err)
+	}
+
+	called := false
+	restore := service.SetManualOrderPaymentValidatorForTest(func(*mdb.Orders, string) (string, error) {
+		called = true
+		return "canonical-expired-hash", nil
+	})
+	defer restore()
+
+	rec := doPost(e, "/pay/submit-tx-hash/"+tradeID, map[string]interface{}{
+		"block_transaction_id": "expired-hash",
+	})
+	t.Logf("SubmitTxHash(expired): status=%d body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if called {
+		t.Fatal("verifier should not run for expired cashier order")
+	}
+	var resp map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if got := int(resp["status_code"].(float64)); got != 10013 {
+		t.Fatalf("status_code = %d, want 10013", got)
+	}
+	reloaded, err := data.GetOrderInfoByTradeId(tradeID)
+	if err != nil {
+		t.Fatalf("reload order: %v", err)
+	}
+	if reloaded.Status != mdb.StatusExpired || reloaded.BlockTransactionId != "" {
+		t.Fatalf("order changed after rejected submit: status=%d block=%q", reloaded.Status, reloaded.BlockTransactionId)
+	}
+}
+
 func TestSubmitTxHash_RejectsOkPayOrder(t *testing.T) {
 	e := setupTestEnv(t)
 	order := &mdb.Orders{
