@@ -48,7 +48,7 @@ func SetupTestDatabases(t testing.TB) func() {
 		&mdb.RpcNode{},
 		&mdb.AdminUser{},
 	)
-	mustMigrate(t, runtimeDB, &mdb.TransactionLock{})
+	mustMigrate(t, runtimeDB, &mdb.TransactionLock{}, &mdb.EvmScanCursor{})
 
 	dao.Mdb = mainDB
 	dao.RuntimeDB = runtimeDB
